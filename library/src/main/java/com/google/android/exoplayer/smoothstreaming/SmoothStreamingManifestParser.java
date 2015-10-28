@@ -16,6 +16,7 @@
 package com.google.android.exoplayer.smoothstreaming;
 
 import com.google.android.exoplayer.ParserException;
+import com.google.android.exoplayer.extractor.mp4.PsshAtomUtil;
 import com.google.android.exoplayer.smoothstreaming.SmoothStreamingManifest.ProtectionElement;
 import com.google.android.exoplayer.smoothstreaming.SmoothStreamingManifest.StreamElement;
 import com.google.android.exoplayer.smoothstreaming.SmoothStreamingManifest.TrackElement;
@@ -96,7 +97,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
       this.parent = parent;
       this.baseUri = baseUri;
       this.tag = tag;
-      this.normalizedAttributes = new LinkedList<Pair<String, Object>>();
+      this.normalizedAttributes = new LinkedList<>();
     }
 
     public final Object parse(XmlPullParser xmlParser) throws XmlPullParserException, IOException,
@@ -343,7 +344,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
       super(parent, baseUri, TAG);
       lookAheadCount = -1;
       protectionElement = null;
-      streamElements = new LinkedList<StreamElement>();
+      streamElements = new LinkedList<>();
     }
 
     @Override
@@ -403,6 +404,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
       if (TAG_PROTECTION_HEADER.equals(parser.getName())) {
         inProtectionHeader = true;
         String uuidString = parser.getAttributeValue(null, KEY_SYSTEM_ID);
+        uuidString = stripCurlyBraces(uuidString);
         uuid = UUID.fromString(uuidString);
       }
     }
@@ -423,9 +425,15 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
 
     @Override
     public Object build() {
-      return new ProtectionElement(uuid, initData);
+      return new ProtectionElement(uuid, PsshAtomUtil.buildPsshAtom(uuid, initData));
     }
 
+    private static String stripCurlyBraces(String uuidString) {
+      if (uuidString.charAt(0) == '{' && uuidString.charAt(uuidString.length() - 1) == '}') {
+        uuidString = uuidString.substring(1, uuidString.length() - 1);
+      }
+      return uuidString;
+    }
   }
 
   private static class StreamElementParser extends ElementParser {
@@ -473,7 +481,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
     public StreamElementParser(ElementParser parent, String baseUri) {
       super(parent, baseUri, TAG);
       this.baseUri = baseUri;
-      tracks = new LinkedList<TrackElement>();
+      tracks = new LinkedList<>();
     }
 
     @Override
@@ -539,7 +547,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
       if (timescale == -1) {
         timescale = (Long) getNormalizedAttribute(KEY_TIME_SCALE);
       }
-      startTimes = new ArrayList<Long>();
+      startTimes = new ArrayList<>();
     }
 
     private int parseType(XmlPullParser parser) throws ParserException {
@@ -602,7 +610,7 @@ public class SmoothStreamingManifestParser implements UriLoadable.Parser<SmoothS
 
     public TrackElementParser(ElementParser parent, String baseUri) {
       super(parent, baseUri, TAG);
-      this.csd = new LinkedList<byte[]>();
+      this.csd = new LinkedList<>();
     }
 
     @Override

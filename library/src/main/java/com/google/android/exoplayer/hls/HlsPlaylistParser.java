@@ -74,7 +74,7 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
   private static final Pattern RESOLUTION_ATTR_REGEX =
       Pattern.compile(RESOLUTION_ATTR + "=(\\d+x\\d+)");
   private static final Pattern MEDIA_DURATION_REGEX =
-      Pattern.compile(MEDIA_DURATION_TAG + ":([\\d.]+),");
+      Pattern.compile(MEDIA_DURATION_TAG + ":([\\d.]+)\\b");
   private static final Pattern MEDIA_SEQUENCE_REGEX =
       Pattern.compile(MEDIA_SEQUENCE_TAG + ":(\\d+)\\b");
   private static final Pattern TARGET_DURATION_REGEX =
@@ -87,7 +87,7 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
   private static final Pattern METHOD_ATTR_REGEX =
       Pattern.compile(METHOD_ATTR + "=(" + METHOD_NONE + "|" + METHOD_AES128 + ")");
   private static final Pattern URI_ATTR_REGEX =
-      Pattern.compile(URI_ATTR + "=\"(.+)\"");
+      Pattern.compile(URI_ATTR + "=\"(.+?)\"");
   private static final Pattern IV_ATTR_REGEX =
       Pattern.compile(IV_ATTR + "=([^,.*]+)");
   private static final Pattern TYPE_ATTR_REGEX =
@@ -106,7 +106,7 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
   public HlsPlaylist parse(String connectionUrl, InputStream inputStream)
       throws IOException, ParserException {
     BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-    Queue<String> extraLines = new LinkedList<String>();
+    Queue<String> extraLines = new LinkedList<>();
     String line;
     try {
       while ((line = reader.readLine()) != null) {
@@ -137,8 +137,8 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
 
   private static HlsMasterPlaylist parseMasterPlaylist(LineIterator iterator, String baseUri)
       throws IOException {
-    ArrayList<Variant> variants = new ArrayList<Variant>();
-    ArrayList<Subtitle> subtitles = new ArrayList<Subtitle>();
+    ArrayList<Variant> variants = new ArrayList<>();
+    ArrayList<Subtitle> subtitles = new ArrayList<>();
     int bitrate = 0;
     String codecs = null;
     int width = -1;
@@ -202,7 +202,7 @@ public final class HlsPlaylistParser implements UriLoadable.Parser<HlsPlaylist> 
     int targetDurationSecs = 0;
     int version = 1; // Default version == 1.
     boolean live = true;
-    List<Segment> segments = new ArrayList<Segment>();
+    List<Segment> segments = new ArrayList<>();
 
     double segmentDurationSecs = 0.0;
     boolean segmentDiscontinuity = false;

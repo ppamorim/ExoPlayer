@@ -30,7 +30,7 @@ import java.util.Collections;
 /**
  * Parses a continuous ADTS byte stream and extracts individual frames.
  */
-/* package */ class AdtsReader extends ElementaryStreamReader {
+/* package */ final class AdtsReader extends ElementaryStreamReader {
 
   private static final int STATE_FINDING_SYNC = 0;
   private static final int STATE_READING_HEADER = 1;
@@ -165,14 +165,15 @@ import java.util.Collections;
       adtsScratch.skipBits(1);
       int channelConfig = adtsScratch.readBits(3);
 
-      byte[] audioSpecificConfig = CodecSpecificDataUtil.buildAudioSpecificConfig(
+      byte[] audioSpecificConfig = CodecSpecificDataUtil.buildAacAudioSpecificConfig(
           audioObjectType, sampleRateIndex, channelConfig);
-      Pair<Integer, Integer> audioParams = CodecSpecificDataUtil.parseAudioSpecificConfig(
+      Pair<Integer, Integer> audioParams = CodecSpecificDataUtil.parseAacAudioSpecificConfig(
           audioSpecificConfig);
 
-      MediaFormat mediaFormat = MediaFormat.createAudioFormat(MimeTypes.AUDIO_AAC,
-          MediaFormat.NO_VALUE, audioParams.second, audioParams.first,
-          Collections.singletonList(audioSpecificConfig));
+      MediaFormat mediaFormat = MediaFormat.createAudioFormat(MediaFormat.NO_VALUE,
+          MimeTypes.AUDIO_AAC, MediaFormat.NO_VALUE, MediaFormat.NO_VALUE, C.UNKNOWN_TIME_US,
+          audioParams.second, audioParams.first, Collections.singletonList(audioSpecificConfig),
+          null);
       frameDurationUs = (C.MICROS_PER_SECOND * 1024L) / mediaFormat.sampleRate;
       output.format(mediaFormat);
       hasOutputFormat = true;

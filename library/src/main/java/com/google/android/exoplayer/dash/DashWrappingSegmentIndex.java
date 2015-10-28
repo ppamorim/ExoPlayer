@@ -22,7 +22,7 @@ import com.google.android.exoplayer.extractor.ChunkIndex;
  * An implementation of {@link DashSegmentIndex} that wraps a {@link ChunkIndex} parsed from a
  * media stream.
  */
-public class DashWrappingSegmentIndex implements DashSegmentIndex {
+/* package */ final class DashWrappingSegmentIndex implements DashSegmentIndex {
 
   private final ChunkIndex chunkIndex;
   private final String uri;
@@ -42,7 +42,7 @@ public class DashWrappingSegmentIndex implements DashSegmentIndex {
   }
 
   @Override
-  public int getLastSegmentNum() {
+  public int getLastSegmentNum(long periodDurationUs) {
     return chunkIndex.length - 1;
   }
 
@@ -52,7 +52,7 @@ public class DashWrappingSegmentIndex implements DashSegmentIndex {
   }
 
   @Override
-  public long getDurationUs(int segmentNum) {
+  public long getDurationUs(int segmentNum, long periodDurationUs) {
     return chunkIndex.durationsUs[segmentNum];
   }
 
@@ -62,7 +62,7 @@ public class DashWrappingSegmentIndex implements DashSegmentIndex {
   }
 
   @Override
-  public int getSegmentNum(long timeUs) {
+  public int getSegmentNum(long timeUs, long periodDurationUs) {
     return chunkIndex.getChunkIndex(timeUs);
   }
 

@@ -20,12 +20,15 @@ import com.google.android.exoplayer.ExoPlayerLibraryInfo;
 import com.google.android.exoplayer.upstream.DataSource;
 import com.google.android.exoplayer.upstream.DataSpec;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.Build;
 import android.text.TextUtils;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -40,6 +43,7 @@ import java.util.Collections;
 import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -59,6 +63,24 @@ public final class Util {
    */
   public static final int SDK_INT = android.os.Build.VERSION.SDK_INT;
 
+  /**
+   * Like {@link android.os.Build#DEVICE}, but in a place where it can be conveniently overridden
+   * for local testing.
+   */
+  public static final String DEVICE = android.os.Build.DEVICE;
+
+  /**
+   * Like {@link android.os.Build#MANUFACTURER}, but in a place where it can be conveniently
+   * overridden for local testing.
+   */
+  public static final String MANUFACTURER = android.os.Build.MANUFACTURER;
+
+  /**
+   * Like {@link android.os.Build#MODEL}, but in a place where it can be conveniently overridden for
+   * local testing.
+   */
+  public static final String MODEL = android.os.Build.MODEL;
+
   private static final Pattern XS_DATE_TIME_PATTERN = Pattern.compile(
       "(\\d\\d\\d\\d)\\-(\\d\\d)\\-(\\d\\d)[Tt]"
       + "(\\d\\d):(\\d\\d):(\\d\\d)(\\.(\\d+))?"
@@ -71,6 +93,17 @@ public final class Util {
   private static final long MAX_BYTES_TO_DRAIN = 2048;
 
   private Util() {}
+
+  /**
+   * Returns whether the device is an AndroidTV.
+   *
+   * @param context A context.
+   * @return True if the device is an AndroidTV. False otherwise.
+   */
+  @SuppressLint("InlinedApi")
+  public static boolean isAndroidTv(Context context) {
+    return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+  }
 
   /**
    * Returns true if the URL points to a file on the local device
@@ -282,6 +315,20 @@ public final class Util {
     int index = Collections.binarySearch(list, key);
     index = index < 0 ? ~index : (inclusive ? index : (index + 1));
     return stayInBounds ? Math.min(list.size() - 1, index) : index;
+  }
+
+  /**
+   * Creates an integer array containing the integers from 0 to {@code length - 1}.
+   *
+   * @param length The length of the array.
+   * @return The array.
+   */
+  public static int[] firstIntegersArray(int length) {
+    int[] firstIntegers = new int[length];
+    for (int i = 0; i < length; i++) {
+      firstIntegers[i] = i;
+    }
+    return firstIntegers;
   }
 
   /**
@@ -542,6 +589,60 @@ public final class Util {
   }
 
   /**
+   * Returns the top 32 bits of a long as an integer.
+   */
+  public static int getTopInt(long value) {
+    return (int) (value >>> 32);
+  }
+
+  /**
+   * Returns the bottom 32 bits of a long as an integer.
+   */
+  public static int getBottomInt(long value) {
+    return (int) value;
+  }
+
+  /**
+   * Returns a long created by concatenating the bits of two integers.
+   */
+  public static long getLong(int topInteger, int bottomInteger) {
+    return ((long) topInteger << 32) | (bottomInteger & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Returns a hex string representation of the data provided.
+   *
+   * @param data The byte array containing the data to be turned into a hex string.
+   * @param beginIndex The begin index, inclusive.
+   * @param endIndex The end index, exclusive.
+   * @return A string containing the hex representation of the data provided.
+   */
+  public static String getHexStringFromBytes(byte[] data, int beginIndex, int endIndex) {
+    StringBuilder dataStringBuilder = new StringBuilder(endIndex - beginIndex);
+    for (int i = beginIndex; i < endIndex; i++) {
+      dataStringBuilder.append(String.format(Locale.US, "%02X", data[i]));
+    }
+    return dataStringBuilder.toString();
+  }
+
+  /**
+   * Returns a string with comma delimited simple names of each object's class.
+   *
+   * @param objects The objects whose simple class names should be comma delimited and returned.
+   * @return A string with comma delimited simple names of each object's class.
+   */
+  public static <T> String getCommaDelimitedSimpleClassNames(T[] objects) {
+    StringBuilder stringBuilder = new StringBuilder();
+    for (int i = 0; i < objects.length; i++) {
+      stringBuilder.append(objects[i].getClass().getSimpleName());
+      if (i < objects.length - 1) {
+        stringBuilder.append(", ");
+      }
+    }
+    return stringBuilder.toString();
+  }
+
+  /**
    * Returns a user agent string based on the given application name and the library version.
    *
    * @param context A valid context of the calling application.
@@ -559,6 +660,58 @@ public final class Util {
     }
     return applicationName + "/" + versionName + " (Linux;Android " + Build.VERSION.RELEASE
         + ") " + "ExoPlayerLib/" + ExoPlayerLibraryInfo.VERSION;
+  }
+
+  /**
+   * Executes a post request using {@link HttpURLConnection}.
+   *
+   * @param url The request URL.
+   * @param data The request body, or null.
+   * @param requestProperties Request properties, or null.
+   * @return The response body.
+   * @throws IOException If an error occurred making the request.
+   */
+  // TODO: Remove this and use HttpDataSource once DataSpec supports inclusion of a POST body.
+  public static byte[] executePost(String url, byte[] data, Map<String, String> requestProperties)
+      throws IOException {
+    HttpURLConnection urlConnection = null;
+    try {
+      urlConnection = (HttpURLConnection) new URL(url).openConnection();
+      urlConnection.setRequestMethod("POST");
+      urlConnection.setDoOutput(data != null);
+      urlConnection.setDoInput(true);
+      if (requestProperties != null) {
+        for (Map.Entry<String, String> requestProperty : requestProperties.entrySet()) {
+          urlConnection.setRequestProperty(requestProperty.getKey(), requestProperty.getValue());
+        }
+      }
+      // Write the request body, if there is one.
+      if (data != null) {
+        OutputStream out = urlConnection.getOutputStream();
+        try {
+          out.write(data);
+        } finally {
+          out.close();
+        }
+      }
+      // Read and return the response body.
+      InputStream inputStream = urlConnection.getInputStream();
+      try {
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        byte scratch[] = new byte[1024];
+        int bytesRead;
+        while ((bytesRead = inputStream.read(scratch)) != -1) {
+          byteArrayOutputStream.write(scratch, 0, bytesRead);
+        }
+        return byteArrayOutputStream.toByteArray();
+      } finally {
+        inputStream.close();
+      }
+    } finally {
+      if (urlConnection != null) {
+        urlConnection.disconnect();
+      }
+    }
   }
 
 }

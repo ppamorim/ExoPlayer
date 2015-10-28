@@ -15,8 +15,6 @@
  */
 package com.google.android.exoplayer.extractor.ts;
 
-import com.google.android.exoplayer.C;
-import com.google.android.exoplayer.audio.AudioCapabilities;
 import com.google.android.exoplayer.extractor.Extractor;
 import com.google.android.exoplayer.extractor.ExtractorInput;
 import com.google.android.exoplayer.extractor.ExtractorOutput;
@@ -34,7 +32,7 @@ import java.io.IOException;
 /**
  * Facilitates the extraction of data from the MPEG-2 TS container format.
  */
-public final class TsExtractor implements Extractor, SeekMap {
+public final class TsExtractor implements Extractor {
 
   private static final String TAG = "TsExtractor";
 
@@ -42,55 +40,69 @@ public final class TsExtractor implements Extractor, SeekMap {
   private static final int TS_SYNC_BYTE = 0x47; // First byte of each TS packet.
   private static final int TS_PAT_PID = 0;
 
+  private static final int TS_STREAM_TYPE_MPA = 0x03;
+  private static final int TS_STREAM_TYPE_MPA_LSF = 0x04;
   private static final int TS_STREAM_TYPE_AAC = 0x0F;
   private static final int TS_STREAM_TYPE_ATSC_AC3 = 0x81;
   private static final int TS_STREAM_TYPE_ATSC_E_AC3 = 0x87;
   private static final int TS_STREAM_TYPE_H264 = 0x1B;
+  private static final int TS_STREAM_TYPE_H265 = 0x24;
   private static final int TS_STREAM_TYPE_ID3 = 0x15;
   private static final int TS_STREAM_TYPE_EIA608 = 0x100; // 0xFF + 1
 
-  private static final long MAX_PTS = 0x1FFFFFFFFL;
-
+  private final PtsTimestampAdjuster ptsTimestampAdjuster;
   private final ParsableByteArray tsPacketBuffer;
   private final ParsableBitArray tsScratch;
-  private final long firstSampleTimestampUs;
+  private final boolean idrKeyframesOnly;
   /* package */ final SparseBooleanArray streamTypes;
-  /* package */ final SparseBooleanArray allowedPassthroughStreamTypes;
   /* package */ final SparseArray<TsPayloadReader> tsPayloadReaders; // Indexed by pid
 
   // Accessed only by the loading thread.
   private ExtractorOutput output;
-  private long timestampOffsetUs;
-  private long lastPts;
   /* package */ Id3Reader id3Reader;
 
   public TsExtractor() {
-    this(0, null);
+    this(new PtsTimestampAdjuster(0));
   }
 
-  public TsExtractor(long firstSampleTimestampUs, AudioCapabilities audioCapabilities) {
-    this.firstSampleTimestampUs = firstSampleTimestampUs;
+  public TsExtractor(PtsTimestampAdjuster ptsTimestampAdjuster) {
+    this(ptsTimestampAdjuster, true);
+  }
+
+  public TsExtractor(PtsTimestampAdjuster ptsTimestampAdjuster, boolean idrKeyframesOnly) {
+    this.idrKeyframesOnly = idrKeyframesOnly;
     tsScratch = new ParsableBitArray(new byte[3]);
     tsPacketBuffer = new ParsableByteArray(TS_PACKET_SIZE);
     streamTypes = new SparseBooleanArray();
-    allowedPassthroughStreamTypes = getPassthroughStreamTypes(audioCapabilities);
-    tsPayloadReaders = new SparseArray<TsPayloadReader>();
+    tsPayloadReaders = new SparseArray<>();
     tsPayloadReaders.put(TS_PAT_PID, new PatReader());
-    lastPts = Long.MIN_VALUE;
+    this.ptsTimestampAdjuster = ptsTimestampAdjuster;
   }
 
   // Extractor implementation.
 
   @Override
+  public boolean sniff(ExtractorInput input) throws IOException, InterruptedException {
+    byte[] scratch = new byte[1];
+    for (int i = 0; i < 5; i++) {
+      input.peekFully(scratch, 0, 1);
+      if ((scratch[0] & 0xFF) != 0x47) {
+        return false;
+      }
+      input.advancePeekPosition(TS_PACKET_SIZE - 1);
+    }
+    return true;
+  }
+
+  @Override
   public void init(ExtractorOutput output) {
     this.output = output;
-    output.seekMap(this);
+    output.seekMap(SeekMap.UNSEEKABLE);
   }
 
   @Override
   public void seek() {
-    timestampOffsetUs = 0;
-    lastPts = Long.MIN_VALUE;
+    ptsTimestampAdjuster.reset();
     for (int i = 0; i < tsPayloadReaders.size(); i++) {
       tsPayloadReaders.valueAt(i).seek();
     }
@@ -103,6 +115,8 @@ public final class TsExtractor implements Extractor, SeekMap {
       return RESULT_END_OF_INPUT;
     }
 
+    // Note: see ISO/IEC 13818-1, section 2.4.3.2 for detailed information on the format of
+    // the header.
     tsPacketBuffer.setPosition(0);
     tsPacketBuffer.setLimit(TS_PACKET_SIZE);
     int syncByte = tsPacketBuffer.readUnsignedByte();
@@ -137,64 +151,7 @@ public final class TsExtractor implements Extractor, SeekMap {
     return RESULT_CONTINUE;
   }
 
-  // SeekMap implementation.
-
-  @Override
-  public boolean isSeekable() {
-    return false;
-  }
-
-  @Override
-  public long getPosition(long timeUs) {
-    return 0;
-  }
-
   // Internals.
-
-  /**
-   * Adjusts a PTS value to the corresponding time in microseconds, accounting for PTS wraparound.
-   *
-   * @param pts The raw PTS value.
-   * @return The corresponding time in microseconds.
-   */
-  /* package */ long ptsToTimeUs(long pts) {
-    if (lastPts != Long.MIN_VALUE) {
-      // The wrap count for the current PTS may be closestWrapCount or (closestWrapCount - 1),
-      // and we need to snap to the one closest to lastPts.
-      long closestWrapCount = (lastPts + (MAX_PTS / 2)) / MAX_PTS;
-      long ptsWrapBelow = pts + (MAX_PTS * (closestWrapCount - 1));
-      long ptsWrapAbove = pts + (MAX_PTS * closestWrapCount);
-      pts = Math.abs(ptsWrapBelow - lastPts) < Math.abs(ptsWrapAbove - lastPts)
-          ? ptsWrapBelow : ptsWrapAbove;
-    }
-    // Calculate the corresponding timestamp.
-    long timeUs = (pts * C.MICROS_PER_SECOND) / 90000;
-    // If we haven't done the initial timestamp adjustment, do it now.
-    if (lastPts == Long.MIN_VALUE) {
-      timestampOffsetUs = firstSampleTimestampUs - timeUs;
-    }
-    // Record the adjusted PTS to adjust for wraparound next time.
-    lastPts = pts;
-    return timeUs + timestampOffsetUs;
-  }
-
-  /**
-   * Returns a sparse boolean array of stream types that can be played back based on
-   * {@code audioCapabilities}.
-   */
-  private static SparseBooleanArray getPassthroughStreamTypes(AudioCapabilities audioCapabilities) {
-    SparseBooleanArray streamTypes = new SparseBooleanArray();
-    if (audioCapabilities != null) {
-      if (audioCapabilities.supportsEncoding(C.ENCODING_AC3)) {
-        streamTypes.put(TS_STREAM_TYPE_ATSC_AC3, true);
-      }
-      if (audioCapabilities.supportsEncoding(C.ENCODING_E_AC3)) {
-        // TODO: Uncomment when Ac3Reader supports enhanced AC-3.
-        // streamTypes.put(TS_STREAM_TYPE_ATSC_E_AC3, true);
-      }
-    }
-    return streamTypes;
-  }
 
   /**
    * Parses TS packet payload data.
@@ -292,6 +249,8 @@ public final class TsExtractor implements Extractor, SeekMap {
         data.skipBytes(pointerField);
       }
 
+      // Note: see ISO/IEC 13818-1, section 2.4.4.8 for detailed information on the format of
+      // the header.
       data.readBytes(pmtScratch, 3);
       pmtScratch.skipBits(12); // table_id (8), section_syntax_indicator (1), '0' (1), reserved (2)
       int sectionLength = pmtScratch.readBits(12);
@@ -335,19 +294,26 @@ public final class TsExtractor implements Extractor, SeekMap {
         // TODO: Detect and read DVB AC-3 streams with Ac3Reader.
         ElementaryStreamReader pesPayloadReader = null;
         switch (streamType) {
+          case TS_STREAM_TYPE_MPA:
+            pesPayloadReader = new MpegAudioReader(output.track(TS_STREAM_TYPE_MPA));
+            break;
+          case TS_STREAM_TYPE_MPA_LSF:
+            pesPayloadReader = new MpegAudioReader(output.track(TS_STREAM_TYPE_MPA_LSF));
+            break;
           case TS_STREAM_TYPE_AAC:
             pesPayloadReader = new AdtsReader(output.track(TS_STREAM_TYPE_AAC));
             break;
           case TS_STREAM_TYPE_ATSC_E_AC3:
           case TS_STREAM_TYPE_ATSC_AC3:
-            if (!allowedPassthroughStreamTypes.get(streamType)) {
-              continue;
-            }
             pesPayloadReader = new Ac3Reader(output.track(streamType));
             break;
           case TS_STREAM_TYPE_H264:
-            SeiReader seiReader = new SeiReader(output.track(TS_STREAM_TYPE_EIA608));
-            pesPayloadReader = new H264Reader(output.track(TS_STREAM_TYPE_H264), seiReader);
+            pesPayloadReader = new H264Reader(output.track(TS_STREAM_TYPE_H264),
+                new SeiReader(output.track(TS_STREAM_TYPE_EIA608)), idrKeyframesOnly);
+            break;
+          case TS_STREAM_TYPE_H265:
+            pesPayloadReader = new H265Reader(output.track(TS_STREAM_TYPE_H265),
+                new SeiReader(output.track(TS_STREAM_TYPE_EIA608)));
             break;
           case TS_STREAM_TYPE_ID3:
             pesPayloadReader = id3Reader;
@@ -376,7 +342,8 @@ public final class TsExtractor implements Extractor, SeekMap {
     private static final int STATE_READING_BODY = 3;
 
     private static final int HEADER_SIZE = 9;
-    private static final int MAX_HEADER_EXTENSION_SIZE = 5;
+    private static final int MAX_HEADER_EXTENSION_SIZE = 10;
+    private static final int PES_SCRATCH_SIZE = 10; // max(HEADER_SIZE, MAX_HEADER_EXTENSION_SIZE)
 
     private final ParsableBitArray pesScratch;
     private final ElementaryStreamReader pesPayloadReader;
@@ -386,13 +353,15 @@ public final class TsExtractor implements Extractor, SeekMap {
     private boolean bodyStarted;
 
     private boolean ptsFlag;
+    private boolean dtsFlag;
+    private boolean seenFirstDts;
     private int extendedHeaderLength;
     private int payloadSize;
     private long timeUs;
 
     public PesReader(ElementaryStreamReader pesPayloadReader) {
       this.pesPayloadReader = pesPayloadReader;
-      pesScratch = new ParsableBitArray(new byte[HEADER_SIZE]);
+      pesScratch = new ParsableBitArray(new byte[PES_SCRATCH_SIZE]);
       state = STATE_FINDING_HEADER;
     }
 
@@ -401,6 +370,7 @@ public final class TsExtractor implements Extractor, SeekMap {
       state = STATE_FINDING_HEADER;
       bytesRead = 0;
       bodyStarted = false;
+      seenFirstDts = false;
       pesPayloadReader.seek();
     }
 
@@ -502,6 +472,8 @@ public final class TsExtractor implements Extractor, SeekMap {
     }
 
     private boolean parseHeader() {
+      // Note: see ISO/IEC 13818-1, section 2.4.3.6 for detailed information on the format of
+      // the header.
       pesScratch.setPosition(0);
       int startCodePrefix = pesScratch.readBits(24);
       if (startCodePrefix != 0x000001) {
@@ -516,9 +488,10 @@ public final class TsExtractor implements Extractor, SeekMap {
       // data_alignment_indicator (1), copyright (1), original_or_copy (1)
       pesScratch.skipBits(8);
       ptsFlag = pesScratch.readBit();
-      // DTS_flag (1), ESCR_flag (1), ES_rate_flag (1), DSM_trick_mode_flag (1),
+      dtsFlag = pesScratch.readBit();
+      // ESCR_flag (1), ES_rate_flag (1), DSM_trick_mode_flag (1),
       // additional_copy_info_flag (1), PES_CRC_flag (1), PES_extension_flag (1)
-      pesScratch.skipBits(7);
+      pesScratch.skipBits(6);
       extendedHeaderLength = pesScratch.readBits(8);
 
       if (packetLength == 0) {
@@ -534,14 +507,30 @@ public final class TsExtractor implements Extractor, SeekMap {
       pesScratch.setPosition(0);
       timeUs = 0;
       if (ptsFlag) {
-        pesScratch.skipBits(4); // '0010'
+        pesScratch.skipBits(4); // '0010' or '0011'
         long pts = (long) pesScratch.readBits(3) << 30;
         pesScratch.skipBits(1); // marker_bit
         pts |= pesScratch.readBits(15) << 15;
         pesScratch.skipBits(1); // marker_bit
         pts |= pesScratch.readBits(15);
         pesScratch.skipBits(1); // marker_bit
-        timeUs = ptsToTimeUs(pts);
+        if (!seenFirstDts && dtsFlag) {
+          pesScratch.skipBits(4); // '0011'
+          long dts = (long) pesScratch.readBits(3) << 30;
+          pesScratch.skipBits(1); // marker_bit
+          dts |= pesScratch.readBits(15) << 15;
+          pesScratch.skipBits(1); // marker_bit
+          dts |= pesScratch.readBits(15);
+          pesScratch.skipBits(1); // marker_bit
+          // Subsequent PES packets may have earlier presentation timestamps than this one, but they
+          // should all be greater than or equal to this packet's decode timestamp. We feed the
+          // decode timestamp to the adjuster here so that in the case that this is the first to be
+          // fed, the adjuster will be able to compute an offset to apply such that the adjusted
+          // presentation timestamps of all future packets are non-negative.
+          ptsTimestampAdjuster.adjustTimestamp(dts);
+          seenFirstDts = true;
+        }
+        timeUs = ptsTimestampAdjuster.adjustTimestamp(pts);
       }
     }
 
